@@ -1,103 +1,271 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import {
+  APIProvider,
+  Map as GoogleMap,
+  Marker,
+  useMap,
+  useMapsLibrary,
+} from "@vis.gl/react-google-maps";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+
+interface LatLng {
+  lat: number;
+  lng: number;
+}
+
+interface SimplifiedPlace {
+  place_id?: string;
+  name?: string;
+  location?: LatLng;
+}
+
+interface Suggestion {
+  message: string;
+  place_id: string;
+  place_name: string;
+  location: LatLng;
+}
+
+const containerStyle: React.CSSProperties = {
+  width: "100%",
+  height: "600px",
+};
+
+function haversineDistance(coords1: LatLng, coords2: LatLng): number {
+  const R = 6371e3; // metres
+  const φ1 = (coords1.lat * Math.PI) / 180; // φ, λ in radians
+  const φ2 = (coords2.lat * Math.PI) / 180;
+  const Δφ = ((coords2.lat - coords1.lat) * Math.PI) / 180;
+  const Δλ = ((coords2.lng - coords1.lng) * Math.PI) / 180;
+
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c; // in metres
+}
+
+function NearbyPlacesLayer({
+  center,
+  setSuggestions,
+}: {
+  center: LatLng;
+  setSuggestions: React.Dispatch<React.SetStateAction<Suggestion[]>>;
+}) {
+  const map = useMap();
+  const placesLib = useMapsLibrary("places");
+  const [places, setPlaces] = useState<google.maps.places.PlaceResult[]>([]);
+  const lastFetchedCenter = useRef<LatLng | null>(null);
+
+  const sendPlacesToBackend = useCallback(
+    async (results: google.maps.places.PlaceResult[]) => {
+      try {
+        const payload = results.map((p) => ({
+          place_id: p.place_id,
+          name: p.name,
+          location: p.geometry?.location?.toJSON(),
+        }));
+
+        const response = await fetch("/api/process-places", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ places: payload }),
+        });
+
+        const data = await response.json();
+        if (data.has_suggestions) {
+          setSuggestions(data.suggestions);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [setSuggestions]
+  );
+
+  // Fetch nearby places
+  useEffect(() => {
+    if (!map || !placesLib) return;
+    const service = new placesLib.PlacesService(map);
+
+    const fetchPlaces = () => {
+      if (lastFetchedCenter.current) {
+        const distance = haversineDistance(center, lastFetchedCenter.current);
+        console.log("Current location:", center);
+        console.log("Previous location:", lastFetchedCenter.current);
+        console.log(`Distance from last fetch: ${distance.toFixed(2)}m`);
+      }
+
+      if (
+        !lastFetchedCenter.current ||
+        haversineDistance(center, lastFetchedCenter.current) > 50
+      ) {
+        console.log("Fetching new places...");
+        lastFetchedCenter.current = center;
+        service.nearbySearch(
+          {
+            location: center,
+            radius: 1000, // in meters
+            rankBy: google.maps.places.RankBy.PROMINENCE,
+            types: [
+              "restaurant",
+              "cafe",
+              "bar",
+              "night_club",
+              "movie_theater",
+              "amusement_park",
+            ],
+          },
+          (
+            results: google.maps.places.PlaceResult[] | null,
+            status: google.maps.places.PlacesServiceStatus
+          ) => {
+            if (
+              status === google.maps.places.PlacesServiceStatus.OK &&
+              results
+            ) {
+              console.log("Nearby places found:", results);
+              setPlaces(results);
+              // Send to backend
+              sendPlacesToBackend(results);
+            } else {
+              console.warn("PlacesService status:", status);
+            }
+          }
+        );
+      }
+    };
+
+    const intervalId = setInterval(fetchPlaces, 2000);
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center, map, placesLib]);
+
+  const simplified = useMemo<SimplifiedPlace[]>(() => {
+    return places.map((p) => ({
+      place_id: p.place_id,
+      name: p.name,
+      location: p.geometry?.location?.toJSON(),
+    }));
+  }, [places]);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <>
+      {simplified.map((p) =>
+        p.location ? <Marker key={p.place_id} position={p.location} /> : null
+      )}
+    </>
+  );
+}
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+export default function MapPage() {
+  const [center, setCenter] = useState<LatLng | null>(null);
+  const [zoom, setZoom] = useState(15);
+  const [userLocation, setUserLocation] = useState<LatLng | null>(null);
+  const [isFollowingUser, setIsFollowingUser] = useState(true);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleCameraChange = (ev: any) => {
+    setCenter(ev.detail.center);
+    setZoom(ev.detail.zoom);
+  };
+
+  const handleDrag = () => {
+    if (isFollowingUser) {
+      setIsFollowingUser(false);
+    }
+  };
+
+  const handleCenterOnMe = () => {
+    if (userLocation) {
+      setCenter(userLocation);
+      setZoom(15);
+      if (!isFollowingUser) {
+        setIsFollowingUser(true);
+      }
+    }
+  };
+
+  // Fetch user location on initial load and watch for changes
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      console.error("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const loc = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        };
+        setUserLocation(loc);
+        if (isFollowingUser) {
+          setCenter(loc);
+        }
+      },
+      (err) => console.error(err),
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [isFollowingUser]);
+
+  return (
+    <div className="flex flex-col gap-4 p-8 items-center">
+      <h1 className="text-2xl font-bold">Nearby Places Demo</h1>
+
+      <div className="w-full flex justify-end">
+        <button
+          onClick={handleCenterOnMe}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+          disabled={!userLocation}
+        >
+          Center on Me
+        </button>
+      </div>
+
+      <APIProvider
+        apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""}
+        libraries={["places"]}
+      >
+        {center ? (
+          <GoogleMap
+            center={center}
+            zoom={zoom}
+            style={containerStyle}
+            onCameraChanged={handleCameraChange}
+            onDrag={handleDrag}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+            {/* User marker */}
+            {userLocation && <Marker position={userLocation} />}
+            {/* Nearby places markers */}
+            <NearbyPlacesLayer
+              center={center}
+              setSuggestions={setSuggestions}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+          </GoogleMap>
+        ) : (
+          <p>Fetching location...</p>
+        )}
+      </APIProvider>
+
+      {suggestions.length > 0 && (
+        <div className="w-full p-4 bg-gray-100 rounded-lg mt-4">
+          <h2 className="text-xl font-bold mb-2">Suggestions</h2>
+          <ul>
+            {suggestions.map((suggestion) => (
+              <li key={suggestion.place_id} className="mb-1">
+                <strong>{suggestion.place_name}:</strong> {suggestion.message}
+              </li>
+            ))}
+          </ul>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      )}
     </div>
   );
 }
