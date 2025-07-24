@@ -197,7 +197,9 @@ export default function MapPage() {
       return;
     }
 
-    const watchId = navigator.geolocation.watchPosition(
+    let watchId: number | null = null;
+
+    watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const loc = {
           lat: pos.coords.latitude,
@@ -208,11 +210,18 @@ export default function MapPage() {
           setCenter(loc);
         }
       },
-      (err) => console.error(err),
+      (err) => {
+        console.error(err);
+        // Optionally: set an error state here to show the user
+      },
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
 
-    return () => navigator.geolocation.clearWatch(watchId);
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
   }, [isFollowingUser]);
 
   return (
